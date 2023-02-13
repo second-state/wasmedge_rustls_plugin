@@ -1,0 +1,18 @@
+[package]
+name = "wasmedge_rustls_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "wasmedge_rustls"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+rustls = "0.20"
+bytes = "1"
+webpki-roots = "0.22"
+wasmedge_sys_ffi = { path = "../wasmedge_sys_ffi" }
+log = "0.4"
+thiserror = "1"
