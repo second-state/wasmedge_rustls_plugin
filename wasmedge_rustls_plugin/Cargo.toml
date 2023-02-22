@@ -13,6 +13,6 @@ libc = "0.2"
 rustls = "0.20"
 bytes = "1"
 webpki-roots = "0.22"
-wasmedge_sys_ffi = { path = "../wasmedge_sys_ffi" }
+wasmedge_plugin_sdk = {version ="0.1.0",git = "https://github.com/second-state/wasmedge_plugin_rust_sdk"}
 log = "0.4"
 thiserror = "1"

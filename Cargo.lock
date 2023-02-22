@@ -215,6 +215,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0046fef7e28c3804e5e38bfa31ea2a0f73905319b677e57ebe37e49358989b5d"
 
 [[package]]
+name = "wasmedge_plugin_sdk"
+version = "0.1.0"
+source = "git+https://github.com/second-state/wasmedge_plugin_rust_sdk#bbb2d954a384c1fd1b1aa4e9f3009db4555086d6"
+dependencies = [
+ "thiserror",
+ "wasmedge_sys_ffi",
+]
+
+[[package]]
 name = "wasmedge_rustls_api"
 version = "0.1.0"
 
@@ -227,13 +236,15 @@ dependencies = [
  "log",
  "rustls",
  "thiserror",
- "wasmedge_sys_ffi",
+ "wasmedge_plugin_sdk",
  "webpki-roots",
 ]
 
 [[package]]
 name = "wasmedge_sys_ffi"
-version = "0.1.0"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9380b4473fa9f406efce5383b41a1506dffd95dbc33a61504f79a4c1b0658b39"
 
 [[package]]
 name = "web-sys"

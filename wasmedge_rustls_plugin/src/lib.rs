@@ -1,11 +1,6 @@
-use std::ptr::null_mut;
+use std::ffi::CString;
 
 use thiserror::Error;
-use wasmedge_sys_ffi as ffi;
-
-pub mod core;
-mod error;
-mod utils;
 
 #[derive(Error, Debug)]
 pub enum TlsError {
@@ -203,19 +198,17 @@ mod tls_client {
 
 mod wasmedge_client_plugin {
 
-    use crate::{
-        core::{
-            instance::memory::Memory,
-            types::{ValType, WasmVal},
-        },
+    use wasmedge_plugin_sdk::{
         error::CoreError,
-        tls_client::*,
-        TlsError,
+        memory::Memory,
+        module::{SyncInstanceRef, SyncModule},
+        types::{ValType, WasmVal},
     };
 
-    use wasmedge_sys_ffi as ffi;
+    use crate::{tls_client::*, TlsError};
 
     fn default_config(
+        _inst: &mut SyncInstanceRef,
         _memory: &mut Memory,
         ctx: &mut Ctx,
         _args: Vec<WasmVal>,
@@ -225,6 +218,7 @@ mod wasmedge_client_plugin {
     }
 
     fn new_client_codec(
+        _inst: &mut SyncInstanceRef,
         memory: &mut Memory,
         ctx: &mut Ctx,
         args: Vec<WasmVal>,
@@ -259,6 +253,7 @@ mod wasmedge_client_plugin {
     }
 
     fn is_handshaking(
+        _inst: &mut SyncInstanceRef,
         memory: &mut Memory,
         ctx: &mut Ctx,
         args: Vec<WasmVal>,
@@ -293,6 +288,7 @@ mod wasmedge_client_plugin {
     }
 
     fn wants(
+        _inst: &mut SyncInstanceRef,
         memory: &mut Memory,
         ctx: &mut Ctx,
         args: Vec<WasmVal>,
@@ -328,6 +324,7 @@ mod wasmedge_client_plugin {
     }
 
     fn delete_codec(
+        _inst: &mut SyncInstanceRef,
         memory: &mut Memory,
         ctx: &mut Ctx,
         args: Vec<WasmVal>,
@@ -353,6 +350,7 @@ mod wasmedge_client_plugin {
     }
 
     fn write_tls(
+        _inst: &mut SyncInstanceRef,
         memory: &mut Memory,
         ctx: &mut Ctx,
         args: Vec<WasmVal>,
@@ -432,6 +430,7 @@ mod wasmedge_client_plugin {
     }
 
     fn read_tls(
+        _inst: &mut SyncInstanceRef,
         memory: &mut Memory,
         ctx: &mut Ctx,
         args: Vec<WasmVal>,
@@ -510,12 +509,10 @@ mod wasmedge_client_plugin {
         }
     }
 
-    pub unsafe extern "C" fn create_module(
-        _desc: *const ffi::WasmEdge_ModuleDescriptor,
-    ) -> *mut ffi::WasmEdge_ModuleInstanceContext {
-        let mut module = crate::core::ImportModule::create("rustls_client", Ctx::new()).unwrap();
+    pub fn create_module() -> SyncModule<Ctx> {
+        let mut module = SyncModule::create("rustls_client", Ctx::new()).unwrap();
         module
-            .add_sync_func(
+            .add_func(
                 "default_config",
                 (vec![], vec![ValType::I32]),
                 default_config,
@@ -523,7 +520,7 @@ mod wasmedge_client_plugin {
             .unwrap();
 
         module
-            .add_sync_func(
+            .add_func(
                 "new_codec",
                 (
                     vec![ValType::I32, ValType::I32, ValType::I32],
@@ -534,7 +531,7 @@ mod wasmedge_client_plugin {
             .unwrap();
 
         module
-            .add_sync_func(
+            .add_func(
                 "codec_is_handshaking",
                 (vec![ValType::I32], vec![ValType::I32]),
                 is_handshaking,
@@ -542,7 +539,7 @@ mod wasmedge_client_plugin {
             .unwrap();
 
         module
-            .add_sync_func(
+            .add_func(
                 "codec_wants",
                 (vec![ValType::I32], vec![ValType::I32]),
                 wants,
@@ -550,7 +547,7 @@ mod wasmedge_client_plugin {
             .unwrap();
 
         module
-            .add_sync_func(
+            .add_func(
                 "delete_codec",
                 (vec![ValType::I32], vec![ValType::I32]),
                 delete_codec,
@@ -558,7 +555,7 @@ mod wasmedge_client_plugin {
             .unwrap();
 
         module
-            .add_sync_func(
+            .add_func(
                 "write_tls",
                 (
                     vec![
@@ -577,7 +574,7 @@ mod wasmedge_client_plugin {
             .unwrap();
 
         module
-            .add_sync_func(
+            .add_func(
                 "read_tls",
                 (
                     vec![
@@ -595,35 +592,20 @@ mod wasmedge_client_plugin {
             )
             .unwrap();
 
-        let ctx = module.inner.0;
-        std::mem::forget(module);
-        ctx
+        module
     }
 }
 
-const MODULE_DESC: [ffi::WasmEdge_ModuleDescriptor; 1] = [ffi::WasmEdge_ModuleDescriptor {
-    Name: "rustls_client\0".as_ptr().cast(),
-    Description: "rustls client module\0".as_ptr().cast(),
-    Create: Some(wasmedge_client_plugin::create_module),
-}];
-
-pub const PLUGIN_DESC: ffi::WasmEdge_PluginDescriptor = ffi::WasmEdge_PluginDescriptor {
-    Name: "rustls\0".as_ptr().cast(),
-    Description: "rustls plugin\0".as_ptr().cast(),
-    APIVersion: ffi::WasmEdge_Plugin_CurrentAPIVersion,
-    Version: ffi::WasmEdge_PluginVersionData {
-        Major: 0,
-        Minor: 0,
-        Patch: 1,
-        Build: 0,
-    },
-    ModuleCount: 1,
-    ProgramOptionCount: 0,
-    ModuleDescriptions: &MODULE_DESC as *const _ as *mut _,
-    ProgramOptions: null_mut(),
-};
-
 #[export_name = "WasmEdge_Plugin_GetDescriptor"]
-pub extern "C" fn plugin_hook() -> *const wasmedge_sys_ffi::WasmEdge_PluginDescriptor {
-    &PLUGIN_DESC
+pub extern "C" fn plugin_hook() -> wasmedge_plugin_sdk::plugin::PluginDescriptorRef {
+    let mut builder = wasmedge_plugin_sdk::plugin::PluginBuilder::create(
+        CString::new("rustls").unwrap(),
+        CString::new("rustls plugin").unwrap(),
+    );
+    builder.add_module(
+        CString::new("rustls_client").unwrap(),
+        CString::new("rustls client module").unwrap(),
+        wasmedge_client_plugin::create_module,
+    );
+    builder.build()
 }

@@ -1,2 +1,2 @@
 [workspace]
-members = ["wasmedge_rustls_api", "wasmedge_sys_ffi", "wasmedge_rustls_plugin"]
+members = ["wasmedge_rustls_api", "wasmedge_rustls_plugin"]
