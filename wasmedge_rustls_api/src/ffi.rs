@@ -6,25 +6,20 @@ mod rustls_client {
         pub fn codec_is_handshaking(codec_id: i32) -> i32;
         pub fn codec_wants(codec_id: i32) -> i32;
         pub fn delete_codec(codec_id: i32) -> i32;
-        pub fn write_tls(
-            codec_id: i32,
-            raw_buf_ptr: i32,
-            raw_buf_len: i32,
-            tls_buf_ptr: i32,
-            tls_buf_len: i32,
-            read_num_ptr: i32,
-            write_num_ptr: i32,
-        ) -> i32;
-        pub fn read_tls(
-            codec_id: i32,
-            tls_buf_ptr: i32,
-            tls_buf_len: i32,
-            raw_buf_ptr: i32,
-            raw_buf_len: i32,
-            read_num_ptr: i32,
-            write_num_ptr: i32,
-        ) -> i32;
+        pub fn send_close_notify(codec_id: i32) -> i32;
+        pub fn process_new_packets(codec_id: i32, io_state_ptr: i32) -> i32;
+        pub fn write_tls(codec_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
+        pub fn write_raw(codec_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
+        pub fn read_tls(codec_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
+        pub fn read_raw(codec_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
     }
+}
+
+#[repr(C)]
+pub struct TlsIoState {
+    pub tls_bytes_to_write: u32,
+    pub plaintext_bytes_to_read: u32,
+    pub peer_has_closed: bool,
 }
 
 // see rustls::Error
@@ -141,51 +136,79 @@ impl TlsClientCodec {
         }
     }
 
-    pub fn write_tls(
-        &mut self,
-        raw_buf: &[u8],
-        tls_buf: &mut [u8],
-    ) -> Result<(usize, usize), TlsError> {
+    pub fn send_close_notify(&mut self) -> Result<(), TlsError> {
         unsafe {
-            let mut read_num = 0;
-            let mut write_num = 0;
-            let e = rustls_client::write_tls(
-                self.id,
-                raw_buf.as_ptr() as i32,
-                raw_buf.len() as i32,
-                tls_buf.as_mut_ptr() as i32,
-                tls_buf.len() as i32,
-                &mut read_num as *mut _ as i32,
-                &mut write_num as *mut _ as i32,
-            );
+            let e = rustls_client::send_close_notify(self.id);
             if e < 0 {
-                return Err(e.into());
-            };
-            Ok((read_num as usize, write_num as usize))
+                Err(e.into())
+            } else {
+                Ok(())
+            }
         }
     }
 
-    pub fn read_tls(
-        &mut self,
-        tls_buf: &[u8],
-        raw_buf: &mut [u8],
-    ) -> Result<(usize, usize), TlsError> {
+    pub fn process_new_packets(&mut self) -> Result<TlsIoState, TlsError> {
         unsafe {
-            let mut read_num = 0;
-            let mut write_num = 0;
-            let e = rustls_client::read_tls(
+            let mut io_state = TlsIoState {
+                tls_bytes_to_write: 0,
+                plaintext_bytes_to_read: 0,
+                peer_has_closed: false,
+            };
+            let e = rustls_client::process_new_packets(
                 self.id,
-                tls_buf.as_ptr() as i32,
-                tls_buf.len() as i32,
-                raw_buf.as_mut_ptr() as i32,
-                raw_buf.len() as i32,
-                &mut read_num as *mut _ as i32,
-                &mut write_num as *mut _ as i32,
+                (&mut io_state) as *mut _ as usize as i32,
             );
             if e < 0 {
-                return Err(e.into());
-            };
-            Ok((read_num as usize, write_num as usize))
+                Err(e.into())
+            } else {
+                Ok(io_state)
+            }
+        }
+    }
+
+    pub fn write_tls(&mut self, tls_buf: &mut [u8]) -> Result<usize, TlsError> {
+        unsafe {
+            let e =
+                rustls_client::write_tls(self.id, tls_buf.as_ptr() as i32, tls_buf.len() as i32);
+            if e < 0 {
+                Err(e.into())
+            } else {
+                Ok(e as usize)
+            }
+        }
+    }
+
+    pub fn write_raw(&mut self, raw_buf: &[u8]) -> Result<usize, TlsError> {
+        unsafe {
+            let e =
+                rustls_client::write_raw(self.id, raw_buf.as_ptr() as i32, raw_buf.len() as i32);
+            if e < 0 {
+                Err(e.into())
+            } else {
+                Ok(e as usize)
+            }
+        }
+    }
+
+    pub fn read_tls(&mut self, tls_buf: &[u8]) -> Result<usize, TlsError> {
+        unsafe {
+            let e = rustls_client::read_tls(self.id, tls_buf.as_ptr() as i32, tls_buf.len() as i32);
+            if e < 0 {
+                Err(e.into())
+            } else {
+                Ok(e as usize)
+            }
+        }
+    }
+
+    pub fn read_raw(&mut self, raw_buf: &mut [u8]) -> Result<usize, TlsError> {
+        unsafe {
+            let e = rustls_client::read_raw(self.id, raw_buf.as_ptr() as i32, raw_buf.len() as i32);
+            if e < 0 {
+                Err(e.into())
+            } else {
+                Ok(e as usize)
+            }
         }
     }
 }

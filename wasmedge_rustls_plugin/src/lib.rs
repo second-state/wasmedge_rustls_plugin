@@ -46,6 +46,23 @@ impl TlsError {
     }
 }
 
+#[repr(C)]
+pub struct TlsIoState {
+    tls_bytes_to_write: u32,
+    plaintext_bytes_to_read: u32,
+    peer_has_closed: bool,
+}
+
+impl From<rustls::IoState> for TlsIoState {
+    fn from(value: rustls::IoState) -> Self {
+        TlsIoState {
+            tls_bytes_to_write: value.tls_bytes_to_write() as u32,
+            plaintext_bytes_to_read: value.plaintext_bytes_to_read() as u32,
+            peer_has_closed: value.peer_has_closed(),
+        }
+    }
+}
+
 mod tls_client {
     use std::{
         io::{Read, Write},
@@ -56,6 +73,7 @@ mod tls_client {
     use rustls::{OwnedTrustAnchor, RootCertStore};
 
     use crate::TlsError;
+    use crate::TlsIoState;
 
     pub struct Ctx {
         pub client_configs: Vec<Option<Arc<rustls::ClientConfig>>>,
@@ -136,42 +154,32 @@ mod tls_client {
             self.0.is_handshaking()
         }
 
-        pub fn write_tls(
-            &mut self,
-            raw_buf: &[u8],
-            tls_buf: &mut [u8],
-        ) -> Result<(usize, usize), TlsError> {
-            let conn = &mut self.0;
-            if conn.is_handshaking() || raw_buf.is_empty() {
-                let wn = conn.write_tls(&mut tls_buf.writer())?;
-                Ok((0, wn))
-            } else {
-                let rn = conn.writer().write(raw_buf)?;
-                let wn = conn.write_tls(&mut tls_buf.writer())?;
-                Ok((rn, wn))
-            }
+        pub fn process_new_packets(&mut self) -> Result<TlsIoState, TlsError> {
+            Ok(self.0.process_new_packets()?.into())
         }
 
-        pub fn read_tls(
-            &mut self,
-            tls_buf: &[u8],
-            raw_buf: &mut [u8],
-        ) -> Result<(usize, usize), TlsError> {
+        pub fn send_close_notify(&mut self) {
+            self.0.send_close_notify();
+        }
+
+        pub fn write_raw(&mut self, raw_buf: &[u8]) -> Result<usize, TlsError> {
             let conn = &mut self.0;
-            let rn = if !tls_buf.is_empty() {
-                conn.read_tls(&mut tls_buf.reader())?
-            } else {
-                0
-            };
+            Ok(conn.writer().write(raw_buf)?)
+        }
 
-            let io_state = conn.process_new_packets()?;
-            let wn = if io_state.plaintext_bytes_to_read() > 0 {
-                conn.reader().read(raw_buf)?
-            } else {
-                0
-            };
+        pub fn write_tls(&mut self, tls_buf: &mut [u8]) -> Result<usize, TlsError> {
+            let conn = &mut self.0;
+            Ok(conn.write_tls(&mut tls_buf.writer())?)
+        }
 
-            Ok((rn, wn))
+        pub fn read_raw(&mut self, raw_buf: &mut [u8]) -> Result<usize, TlsError> {
+            let conn = &mut self.0;
+            Ok(conn.reader().read(raw_buf)?)
+        }
+
+        pub fn read_tls(&mut self, tls_buf: &[u8]) -> Result<usize, TlsError> {
+            let conn = &mut self.0;
+            Ok(conn.read_tls(&mut tls_buf.reader())?)
         }
     }
 
@@ -206,6 +214,15 @@ mod wasmedge_client_plugin {
     };
 
     use crate::{tls_client::*, TlsError};
+
+    macro_rules! match_value {
+        ($expression:expr, $t:path, $error:expr) => {
+            match $expression {
+                $t(v) => v,
+                _ => return Err($error),
+            }
+        };
+    }
 
     fn default_config(
         _inst: &mut SyncInstanceRef,
@@ -264,20 +281,18 @@ mod wasmedge_client_plugin {
             ctx: &mut Ctx,
             args: Vec<WasmVal>,
         ) -> Result<WasmVal, TlsError> {
-            if let WasmVal::I32(codec_id) = args[0].clone() {
-                let codec = ctx
-                    .client_codec
-                    .get(codec_id as usize)
-                    .ok_or(TlsError::ParamError)?
-                    .as_ref()
-                    .ok_or(TlsError::ParamError)?;
-                if codec.is_handshaking() {
-                    Ok(WasmVal::I32(1))
-                } else {
-                    Ok(WasmVal::I32(0))
-                }
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let codec = ctx
+                .client_codec
+                .get(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_ref()
+                .ok_or(TlsError::ParamError)?;
+
+            if codec.is_handshaking() {
+                Ok(WasmVal::I32(1))
             } else {
-                Err(TlsError::ParamError)
+                Ok(WasmVal::I32(0))
             }
         }
 
@@ -299,21 +314,18 @@ mod wasmedge_client_plugin {
             ctx: &mut Ctx,
             args: Vec<WasmVal>,
         ) -> Result<WasmVal, TlsError> {
-            if let WasmVal::I32(codec_id) = args[0].clone() {
-                let codec = ctx
-                    .client_codec
-                    .get(codec_id as usize)
-                    .ok_or(TlsError::ParamError)?
-                    .as_ref()
-                    .ok_or(TlsError::ParamError)?;
-                match (codec.0.wants_write(), codec.0.wants_read()) {
-                    (true, true) => Ok(WasmVal::I32(0b11)),
-                    (true, false) => Ok(WasmVal::I32(0b10)),
-                    (false, true) => Ok(WasmVal::I32(0b01)),
-                    (false, false) => Ok(WasmVal::I32(0)),
-                }
-            } else {
-                Err(TlsError::ParamError)
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let codec = ctx
+                .client_codec
+                .get(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_ref()
+                .ok_or(TlsError::ParamError)?;
+            match (codec.0.wants_write(), codec.0.wants_read()) {
+                (true, true) => Ok(WasmVal::I32(0b11)),
+                (true, false) => Ok(WasmVal::I32(0b10)),
+                (false, true) => Ok(WasmVal::I32(0b01)),
+                (false, false) => Ok(WasmVal::I32(0)),
             }
         }
 
@@ -335,15 +347,112 @@ mod wasmedge_client_plugin {
             ctx: &mut Ctx,
             args: Vec<WasmVal>,
         ) -> Result<WasmVal, TlsError> {
-            if let WasmVal::I32(codec_id) = args[0].clone() {
-                ctx.delete_codec(codec_id as usize);
-                Ok(WasmVal::I32(0))
-            } else {
-                Err(TlsError::ParamError)
-            }
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            ctx.delete_codec(codec_id as usize);
+            Ok(WasmVal::I32(0))
         }
 
         match delete_codec_inner(memory, ctx, args) {
+            Ok(ok) => Ok(vec![ok]),
+            Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
+        }
+    }
+
+    fn process_new_packets(
+        _inst: &mut SyncInstanceRef,
+        memory: &mut Memory,
+        ctx: &mut Ctx,
+        args: Vec<WasmVal>,
+    ) -> Result<Vec<WasmVal>, CoreError> {
+        #[inline]
+        fn process_new_packets_inner(
+            memory: &mut Memory,
+            ctx: &mut Ctx,
+            args: Vec<WasmVal>,
+        ) -> Result<WasmVal, TlsError> {
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let result_ptr = match_value!(args[1].clone(), WasmVal::I32, TlsError::ParamError);
+
+            let codec = ctx
+                .client_codec
+                .get_mut(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_mut()
+                .ok_or(TlsError::ParamError)?;
+            let io_state = codec.process_new_packets()?;
+
+            memory
+                .write_data((result_ptr as usize).into(), io_state)
+                .ok_or(TlsError::ParamError)?;
+
+            Ok(WasmVal::I32(0 as i32))
+        }
+        match process_new_packets_inner(memory, ctx, args) {
+            Ok(ok) => Ok(vec![ok]),
+            Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
+        }
+    }
+
+    fn send_close_notify(
+        _inst: &mut SyncInstanceRef,
+        memory: &mut Memory,
+        ctx: &mut Ctx,
+        args: Vec<WasmVal>,
+    ) -> Result<Vec<WasmVal>, CoreError> {
+        #[inline]
+        fn send_close_notify_inner(
+            _memory: &mut Memory,
+            ctx: &mut Ctx,
+            args: Vec<WasmVal>,
+        ) -> Result<WasmVal, TlsError> {
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let codec = ctx
+                .client_codec
+                .get_mut(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_mut()
+                .ok_or(TlsError::ParamError)?;
+            codec.send_close_notify();
+            Ok(WasmVal::I32(0))
+        }
+
+        match send_close_notify_inner(memory, ctx, args) {
+            Ok(ok) => Ok(vec![ok]),
+            Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
+        }
+    }
+
+    fn write_raw(
+        _inst: &mut SyncInstanceRef,
+        memory: &mut Memory,
+        ctx: &mut Ctx,
+        args: Vec<WasmVal>,
+    ) -> Result<Vec<WasmVal>, CoreError> {
+        #[inline]
+        fn write_raw_inner(
+            memory: &mut Memory,
+            ctx: &mut Ctx,
+            args: Vec<WasmVal>,
+        ) -> Result<WasmVal, TlsError> {
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let raw_buf_ptr = match_value!(args[1].clone(), WasmVal::I32, TlsError::ParamError);
+            let raw_len = match_value!(args[2].clone(), WasmVal::I32, TlsError::ParamError);
+
+            let codec = ctx
+                .client_codec
+                .get_mut(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_mut()
+                .ok_or(TlsError::ParamError)?;
+
+            let raw_buf = memory
+                .data_pointer(raw_buf_ptr as usize, raw_len as usize)
+                .ok_or(TlsError::ParamError)?;
+
+            let n = codec.write_raw(raw_buf)?;
+            Ok(WasmVal::I32(n as i32))
+        }
+        match write_raw_inner(memory, ctx, args) {
             Ok(ok) => Ok(vec![ok]),
             Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
         }
@@ -361,69 +470,61 @@ mod wasmedge_client_plugin {
             ctx: &mut Ctx,
             args: Vec<WasmVal>,
         ) -> Result<WasmVal, TlsError> {
-            let codec_id = args[0].clone();
-            let raw_buf = args[1].clone();
-            let raw_len = args[2].clone();
-            let tls_buf = args[3].clone();
-            let tls_len = args[4].clone();
-            let read_num_ptr = args[5].clone();
-            let write_num_ptr = args[6].clone();
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let tls_buf_ptr = match_value!(args[1].clone(), WasmVal::I32, TlsError::ParamError);
+            let tls_len = match_value!(args[2].clone(), WasmVal::I32, TlsError::ParamError);
 
-            if let (
-                WasmVal::I32(codec_id),
-                WasmVal::I32(raw_buf_ptr),
-                WasmVal::I32(raw_len),
-                WasmVal::I32(tls_buf_ptr),
-                WasmVal::I32(tls_len),
-                WasmVal::I32(read_num_ptr),
-                WasmVal::I32(write_num_ptr),
-            ) = (
-                codec_id,
-                raw_buf,
-                raw_len,
-                tls_buf,
-                tls_len,
-                read_num_ptr,
-                write_num_ptr,
-            ) {
-                let codec = ctx
-                    .client_codec
-                    .get_mut(codec_id as usize)
-                    .ok_or(TlsError::ParamError)?
-                    .as_mut()
-                    .ok_or(TlsError::ParamError)?;
+            let codec = ctx
+                .client_codec
+                .get_mut(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_mut()
+                .ok_or(TlsError::ParamError)?;
 
-                let raw_buf;
-                let tls_buf;
-                unsafe {
-                    let raw_buf_ptr = memory
-                        .data_pointer_raw(raw_buf_ptr as usize, raw_len as usize)
-                        .ok_or(TlsError::ParamError)?;
+            let raw_buf = memory
+                .data_pointer_mut(tls_buf_ptr as usize, tls_len as usize)
+                .ok_or(TlsError::ParamError)?;
 
-                    let tls_buf_ptr = memory
-                        .data_pointer_mut_raw(tls_buf_ptr as usize, tls_len as usize)
-                        .ok_or(TlsError::ParamError)?;
-
-                    raw_buf = std::slice::from_raw_parts(raw_buf_ptr, raw_len as usize);
-                    tls_buf = std::slice::from_raw_parts_mut(tls_buf_ptr, tls_len as usize);
-                }
-
-                let (r_num, w_num) = codec.write_tls(raw_buf, tls_buf)?;
-                memory
-                    .write_data((read_num_ptr as usize).into(), r_num as i32)
-                    .ok_or(TlsError::ParamError)?;
-
-                memory
-                    .write_data((write_num_ptr as usize).into(), w_num as i32)
-                    .ok_or(TlsError::ParamError)?;
-
-                Ok(WasmVal::I32(0))
-            } else {
-                Err(TlsError::ParamError)
-            }
+            let n = codec.write_tls(raw_buf)?;
+            Ok(WasmVal::I32(n as i32))
         }
-
         match write_tls_inner(memory, ctx, args) {
+            Ok(ok) => Ok(vec![ok]),
+            Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
+        }
+    }
+
+    fn read_raw(
+        _inst: &mut SyncInstanceRef,
+        memory: &mut Memory,
+        ctx: &mut Ctx,
+        args: Vec<WasmVal>,
+    ) -> Result<Vec<WasmVal>, CoreError> {
+        #[inline]
+        fn read_raw_inner(
+            memory: &mut Memory,
+            ctx: &mut Ctx,
+            args: Vec<WasmVal>,
+        ) -> Result<WasmVal, TlsError> {
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let raw_buf_ptr = match_value!(args[1].clone(), WasmVal::I32, TlsError::ParamError);
+            let raw_len = match_value!(args[2].clone(), WasmVal::I32, TlsError::ParamError);
+
+            let codec = ctx
+                .client_codec
+                .get_mut(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_mut()
+                .ok_or(TlsError::ParamError)?;
+
+            let raw_buf = memory
+                .data_pointer_mut(raw_buf_ptr as usize, raw_len as usize)
+                .ok_or(TlsError::ParamError)?;
+
+            let n = codec.read_raw(raw_buf)?;
+            Ok(WasmVal::I32(n as i32))
+        }
+        match read_raw_inner(memory, ctx, args) {
             Ok(ok) => Ok(vec![ok]),
             Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
         }
@@ -441,68 +542,24 @@ mod wasmedge_client_plugin {
             ctx: &mut Ctx,
             args: Vec<WasmVal>,
         ) -> Result<WasmVal, TlsError> {
-            let codec_id = args[0].clone();
-            let tls_buf = args[1].clone();
-            let tls_len = args[2].clone();
-            let raw_buf = args[3].clone();
-            let raw_len = args[4].clone();
-            let read_num_ptr = args[5].clone();
-            let write_num_ptr = args[6].clone();
+            let codec_id = match_value!(args[0].clone(), WasmVal::I32, TlsError::ParamError);
+            let tls_buf_ptr = match_value!(args[1].clone(), WasmVal::I32, TlsError::ParamError);
+            let tls_len = match_value!(args[2].clone(), WasmVal::I32, TlsError::ParamError);
 
-            if let (
-                WasmVal::I32(codec_id),
-                WasmVal::I32(raw_buf_ptr),
-                WasmVal::I32(raw_len),
-                WasmVal::I32(tls_buf_ptr),
-                WasmVal::I32(tls_len),
-                WasmVal::I32(read_num_ptr),
-                WasmVal::I32(write_num_ptr),
-            ) = (
-                codec_id,
-                raw_buf,
-                raw_len,
-                tls_buf,
-                tls_len,
-                read_num_ptr,
-                write_num_ptr,
-            ) {
-                let codec = ctx
-                    .client_codec
-                    .get_mut(codec_id as usize)
-                    .ok_or(TlsError::ParamError)?
-                    .as_mut()
-                    .ok_or(TlsError::ParamError)?;
+            let codec = ctx
+                .client_codec
+                .get_mut(codec_id as usize)
+                .ok_or(TlsError::ParamError)?
+                .as_mut()
+                .ok_or(TlsError::ParamError)?;
 
-                let raw_buf;
-                let tls_buf;
-                unsafe {
-                    let raw_buf_ptr = memory
-                        .data_pointer_mut_raw(raw_buf_ptr as usize, raw_len as usize)
-                        .ok_or(TlsError::ParamError)?;
+            let raw_buf = memory
+                .data_pointer(tls_buf_ptr as usize, tls_len as usize)
+                .ok_or(TlsError::ParamError)?;
 
-                    let tls_buf_ptr = memory
-                        .data_pointer_raw(tls_buf_ptr as usize, tls_len as usize)
-                        .ok_or(TlsError::ParamError)?;
-
-                    raw_buf = std::slice::from_raw_parts_mut(raw_buf_ptr, raw_len as usize);
-                    tls_buf = std::slice::from_raw_parts(tls_buf_ptr, tls_len as usize);
-                }
-
-                let (r_num, w_num) = codec.read_tls(tls_buf, raw_buf)?;
-                memory
-                    .write_data((read_num_ptr as usize).into(), r_num as i32)
-                    .ok_or(TlsError::ParamError)?;
-
-                memory
-                    .write_data((write_num_ptr as usize).into(), w_num as i32)
-                    .ok_or(TlsError::ParamError)?;
-
-                Ok(WasmVal::I32(0))
-            } else {
-                Err(TlsError::ParamError)
-            }
+            let n = codec.read_tls(raw_buf)?;
+            Ok(WasmVal::I32(n as i32))
         }
-
         match read_tls_inner(memory, ctx, args) {
             Ok(ok) => Ok(vec![ok]),
             Err(e) => Ok(vec![WasmVal::I32(e.error_code())]),
@@ -556,16 +613,43 @@ mod wasmedge_client_plugin {
 
         module
             .add_func(
+                "send_close_notify",
+                (vec![ValType::I32], vec![ValType::I32]),
+                send_close_notify,
+            )
+            .unwrap();
+
+        module
+            .add_func(
+                "process_new_packets",
+                (vec![ValType::I32, ValType::I32], vec![ValType::I32]),
+                process_new_packets,
+            )
+            .unwrap();
+
+        module
+            .add_func(
+                "write_raw",
+                (
+                    vec![
+                        ValType::I32, //codec_id
+                        ValType::I32, // buf
+                        ValType::I32, // buf_len
+                    ],
+                    vec![ValType::I32],
+                ),
+                write_raw,
+            )
+            .unwrap();
+
+        module
+            .add_func(
                 "write_tls",
                 (
                     vec![
                         ValType::I32, //codec_id
-                        ValType::I32, // raw_buf
-                        ValType::I32, // raw_buf_len
-                        ValType::I32, // tls_buf
-                        ValType::I32, // tls_buf_len
-                        ValType::I32, // read_num
-                        ValType::I32, // write_num
+                        ValType::I32, // buf
+                        ValType::I32, // buf_len
                     ],
                     vec![ValType::I32],
                 ),
@@ -575,16 +659,27 @@ mod wasmedge_client_plugin {
 
         module
             .add_func(
+                "read_raw",
+                (
+                    vec![
+                        ValType::I32, //codec_id
+                        ValType::I32, // buf
+                        ValType::I32, // buf_len
+                    ],
+                    vec![ValType::I32],
+                ),
+                read_raw,
+            )
+            .unwrap();
+
+        module
+            .add_func(
                 "read_tls",
                 (
                     vec![
                         ValType::I32, //codec_id
-                        ValType::I32, // tls_buf
-                        ValType::I32, // tls_buf_len
-                        ValType::I32, // raw_buf
-                        ValType::I32, // raw_buf_len
-                        ValType::I32, // read_num
-                        ValType::I32, // write_num
+                        ValType::I32, // buf
+                        ValType::I32, // buf_len
                     ],
                     vec![ValType::I32],
                 ),
