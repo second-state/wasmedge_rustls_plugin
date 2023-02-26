@@ -17,6 +17,7 @@ mod rustls_client {
     }
 }
 
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub struct TlsIoState {
     pub tls_bytes_to_write: u32,
