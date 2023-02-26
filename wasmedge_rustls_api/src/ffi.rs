@@ -94,6 +94,12 @@ impl Display for TlsError {
 }
 
 impl std::error::Error for TlsError {}
+
+impl From<TlsError> for std::io::Error {
+    fn from(value: TlsError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, value)
+    }
+}
 pub struct ClientConfig {
     id: i32,
 }
@@ -225,5 +231,68 @@ impl TlsClientCodec {
 impl Drop for TlsClientCodec {
     fn drop(&mut self) {
         unsafe { rustls_client::delete_codec(self.id) };
+    }
+}
+
+pub fn complete_io<T>(codec: &mut TlsClientCodec, io: &mut T) -> std::io::Result<(usize, usize)>
+where
+    T: std::io::Read + std::io::Write,
+{
+    let until_handshaked = codec.is_handshaking();
+    let mut eof = false;
+    let mut wrlen = 0;
+    let mut rdlen = 0;
+    let mut buf = [0u8; 1024 * 4];
+
+    loop {
+        while codec.wants().wants_write {
+            let n = codec.write_tls(&mut buf)?;
+            io.write_all(&buf[0..n])?;
+            wrlen += n;
+        }
+
+        if !until_handshaked && wrlen > 0 {
+            return Ok((rdlen, wrlen));
+        }
+
+        while !eof && codec.wants().wants_read {
+            let n = io.read(&mut buf)?;
+            let read_size = match codec.read_tls(&buf[0..n]) {
+                Ok(0) => {
+                    eof = true;
+                    Some(0)
+                }
+                Ok(n) => {
+                    rdlen += n;
+                    Some(n)
+                }
+                Err(err) => return Err(err.into()),
+            };
+            if read_size.is_some() {
+                break;
+            }
+        }
+
+        match codec.process_new_packets() {
+            Ok(_) => {}
+            Err(e) => {
+                // In case we have an alert to send describing this error,
+                // try a last-gasp write -- but don't predate the primary
+                // error.
+                let n = codec.write_tls(&mut buf)?;
+                let _ignored = io.write_all(&buf[0..n]);
+
+                return Err(e.into());
+            }
+        };
+
+        match (eof, until_handshaked, codec.is_handshaking()) {
+            (_, true, false) => return Ok((rdlen, wrlen)),
+            (_, false, _) => return Ok((rdlen, wrlen)),
+            (true, true, true) => {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+            }
+            (..) => {}
+        }
     }
 }
