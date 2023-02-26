@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 mod rustls_client {
     #[link(wasm_import_module = "rustls_client")]
     extern "C" {
@@ -85,6 +87,13 @@ impl Into<TlsError> for i32 {
     }
 }
 
+impl Display for TlsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for TlsError {}
 pub struct ClientConfig {
     id: i32,
 }
