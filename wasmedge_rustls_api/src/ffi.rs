@@ -52,6 +52,7 @@ pub enum TlsError {
     PeerSentOversizedRecord,
     NoApplicationProtocol,
     BadMaxFragmentSize,
+    IOWouldBlock,
     IO,
 }
 
@@ -82,7 +83,8 @@ impl Into<TlsError> for i32 {
             -22 => TlsError::PeerSentOversizedRecord,
             -23 => TlsError::NoApplicationProtocol,
             -24 => TlsError::BadMaxFragmentSize,
-            -25 => TlsError::IO,
+            -25 => TlsError::IOWouldBlock,
+            -26 => TlsError::IO,
             _ => TlsError::ParamError,
         }
     }
@@ -98,7 +100,11 @@ impl std::error::Error for TlsError {}
 
 impl From<TlsError> for std::io::Error {
     fn from(value: TlsError) -> Self {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, value)
+        if let TlsError::IOWouldBlock = value {
+            std::io::ErrorKind::WouldBlock.into()
+        } else {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, value)
+        }
     }
 }
 pub struct ClientConfig {
@@ -127,10 +133,12 @@ impl Default for ClientConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct TlsClientCodec {
     id: i32,
 }
 
+#[derive(Debug)]
 pub struct WantsResult {
     pub wants_read: bool,
     pub wants_write: bool,

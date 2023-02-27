@@ -41,7 +41,8 @@ impl TlsError {
                 rustls::Error::NoApplicationProtocol => -23,
                 rustls::Error::BadMaxFragmentSize => -24,
             },
-            TlsError::IO(_) => -25,
+            TlsError::IO(io_err) if io_err.kind() == std::io::ErrorKind::WouldBlock => -25,
+            TlsError::IO(_) => -26,
         }
     }
 }
@@ -521,7 +522,8 @@ mod wasmedge_client_plugin {
                 .data_pointer_mut(raw_buf_ptr as usize, raw_len as usize)
                 .ok_or(TlsError::ParamError)?;
 
-            let n = codec.read_raw(raw_buf)?;
+            let n = codec.read_raw(raw_buf);
+            let n = n?;
             Ok(WasmVal::I32(n as i32))
         }
         match read_raw_inner(memory, ctx, args) {
