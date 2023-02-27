@@ -2,6 +2,9 @@
 name = "wasmedge_rustls_api"
 version = "0.1.0"
 edition = "2021"
+license = "APACHE2"
+repository = "https://github.com/second-state/wasmedge_rustls_api"
+description = "The TLS plugin for WasmEdge. It provides a TLS API for WasmEdge programs."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
