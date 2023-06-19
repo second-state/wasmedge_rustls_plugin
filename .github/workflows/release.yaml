@@ -48,3 +48,41 @@ jobs:
           asset_path: libwasmedge_rustls.zip
           asset_name: wasmedge_rustls_plugin_${{ matrix.os }}.zip
           asset_content_type: application/octet-stream
+
+  build_on_manylinux2014:
+    needs: create_release 
+    runs-on: ${{ matrix.host_runner }}
+    container: wasmedge/wasmedge:${{ matrix.docker_tag }}
+    strategy:
+      matrix:
+        include:
+          - name: manylinux 2014 x86_64
+            host_runner: ubuntu-latest
+            docker_tag: manylinux2014_x86_64
+          - name: manylinux 2014 aarch64
+            host_runner: linux-arm64
+            docker_tag: manylinux2014_aarch64
+    steps:
+      - name: Install WasmEdge
+        run: curl -sSf https://raw.githubusercontent.com/WasmEdge/WasmEdge/master/utils/install.sh | sh -s
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Build 
+        run: |
+          export WASMEDGE_LIB_DIR=~/.wasmedge/
+          export LIBRARY_PATH=~/.wasmedge/lib/
+          ~/.cargo/bin/cargo build --release --manifest-path wasmedge_rustls_plugin/Cargo.toml
+          zip -r libwasmedge_rustls.zip ./target/release/libwasmedge_rustls.so ./target/release/libwasmedge_rustls.dylib
+      - name: Upload release asset
+        uses: actions/upload-release-asset@v1  
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          asset_path: libwasmedge_rustls.zip
+          asset_name: wasmedge_rustls_plugin_${{ matrix.docker_tag }}.zip
+          asset_content_type: application/octet-stream
