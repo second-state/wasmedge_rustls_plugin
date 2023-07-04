@@ -1,5 +1,3 @@
-use std::ffi::CString;
-
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -210,7 +208,7 @@ mod wasmedge_client_plugin {
     use wasmedge_plugin_sdk::{
         error::CoreError,
         memory::Memory,
-        module::{SyncInstanceRef, SyncModule},
+        module::{PluginModule, SyncInstanceRef},
         types::{ValType, WasmVal},
     };
 
@@ -568,8 +566,8 @@ mod wasmedge_client_plugin {
         }
     }
 
-    pub fn create_module() -> SyncModule<Ctx> {
-        let mut module = SyncModule::create("rustls_client", Ctx::new()).unwrap();
+    pub fn create_module() -> PluginModule<Ctx> {
+        let mut module = PluginModule::create("rustls_client", Ctx::new()).unwrap();
         module
             .add_func(
                 "default_config",
@@ -693,16 +691,13 @@ mod wasmedge_client_plugin {
     }
 }
 
-#[export_name = "WasmEdge_Plugin_GetDescriptor"]
-pub extern "C" fn plugin_hook() -> wasmedge_plugin_sdk::plugin::PluginDescriptorRef {
-    let mut builder = wasmedge_plugin_sdk::plugin::PluginBuilder::create(
-        CString::new("rustls").unwrap(),
-        CString::new("rustls plugin").unwrap(),
-    );
-    builder.add_module(
-        CString::new("rustls_client").unwrap(),
-        CString::new("rustls client module").unwrap(),
-        wasmedge_client_plugin::create_module,
-    );
-    builder.build()
-}
+use wasmedge_client_plugin::create_module;
+
+wasmedge_plugin_sdk::plugin::register_plugin!(
+    plugin_name="rustls",
+    plugin_description="rustls plugin",
+    version=(0,0,1,0),
+    modules=[
+        {"rustls_client","rustls client module",create_module}
+    ]
+);
